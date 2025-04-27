@@ -1,0 +1,11 @@
+*.pyc
+__pycache__/
+.DS_Store
+.ipynb_checkpoints/
+*.swp
+faiss_index/
+checkpoints/
+*.pt
+*.pth
+processed_data_rag/
+tokenized_data_chunks/
