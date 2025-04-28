@@ -225,6 +225,51 @@ class RAGExperiment:
 
         return vectorstore, index_time
 
+    def create_dummy_vectorstore(self, embedding_model):
+        """Create a simple FAISS vectorstore just for baseline testing."""
+        return FAISS.from_texts(
+            ["dummy text"],
+            embedding_model
+        )
+
+    def create_vector_store_from_embeddings(self, embedding_model, texts, metadatas, precomputed_embeddings):
+        """Create a vector store using precomputed embeddings."""
+        
+        # 1) Determine embedding dimensionality
+        dimension = precomputed_embeddings.shape[1]
+        
+        # 2) Build the appropriate FAISS index
+        faiss_index = self.create_faiss_index(dimension)
+        
+        # 3) Train the index if it requires training (e.g. IVF, PQ)
+        if hasattr(faiss_index, "is_trained") and not faiss_index.is_trained:
+            print(f"Training FAISS index of type {self.vector_search_type}...")
+            faiss_index.train(precomputed_embeddings)
+        
+        # 4) Add all vectors into the index
+        faiss_index.add(precomputed_embeddings)
+        print(f"Added {len(precomputed_embeddings)} vectors to the FAISS index")
+        
+        # 5) Create FAISS vectorstore WITHOUT passing the custom index parameter
+        vectorstore = FAISS.from_texts(
+            texts,
+            embedding_model,
+            metadatas=metadatas
+        )
+        
+        # 6) Replace the default index with our custom one
+        vectorstore.index = faiss_index
+        
+        # 7) Tweak index parameters per type
+        if "ivf" in self.vector_search_type.lower():
+            if hasattr(vectorstore.index, "nprobe"):
+                vectorstore.index.nprobe = 10
+        if "hnsw" in self.vector_search_type.lower():
+            if hasattr(vectorstore.index, "hnsw"):
+                vectorstore.index.hnsw.efConstruction = 200
+                vectorstore.index.hnsw.efSearch = 200
+                
+        return vectorstore
     
     def run_experiment(self, test_queries=None):
         """Run complete experiment and save results."""
