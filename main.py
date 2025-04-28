@@ -5,8 +5,8 @@ import torch
 import gc
 from rag_pipeline import RAGExperiment
 from llama_rag_integration import LLaMARAGSystem
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from langchain.llms import HuggingFacePipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
+from langchain_huggingface import HuggingFacePipeline
 
 def main():
     # ─── 1) Configuration ─────────────────────────────────
@@ -50,12 +50,19 @@ def main():
         device_map="auto"
     )
 
-    llm = HuggingFacePipeline(
+    # Create the Hugging Face pipeline first
+    pipe = pipeline(
+        "text-generation",
         model=model,
         tokenizer=tokenizer,
-        device=0,
-        max_new_tokens=512
+        max_new_tokens=512,
+        temperature=0.7,
+        do_sample=True,
+        device=0 if torch.cuda.is_available() else -1,
     )
+
+    # Then create the LangChain wrapper around the pipeline
+    llm = HuggingFacePipeline(pipeline=pipe)
     print("✓ LLaMA model loaded successfully")
 
     # ─── 3) Sweep over embeddings & index types ────────────
