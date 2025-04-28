@@ -1,5 +1,5 @@
 langchain
-faiss-cpu
+faiss-gpu
 sentence-transformers
 torch
 transformers
@@ -7,3 +7,4 @@ datasets
 bitsandbytes
 accelerate
 peft
+openai
