@@ -5,7 +5,7 @@ import torch
 import gc
 from rag_pipeline import RAGExperiment
 from llama_rag_integration import LLaMARAGSystem
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from langchain.llms import HuggingFacePipeline
 
 def main():
@@ -39,11 +39,17 @@ def main():
     # ─── 2) Load LLaMA model once ─────────────────────────
     print("\n▶ Setting up LLaMA model (one-time load)")
     tokenizer = AutoTokenizer.from_pretrained(LLAMA_PATH)
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16
+    )
+
     model = AutoModelForCausalLM.from_pretrained(
         LLAMA_PATH,
-        load_in_4bit=True,
+        quantization_config=quantization_config,
         device_map="auto"
     )
+
     llm = HuggingFacePipeline(
         model=model,
         tokenizer=tokenizer,
