@@ -39,14 +39,14 @@ def main():
     # ─── 2) Load LLaMA model once ─────────────────────────
     print("\n▶ Setting up LLaMA model (one-time load)")
     tokenizer = AutoTokenizer.from_pretrained(LLAMA_PATH)
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16
-    )
+    # quantization_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_compute_dtype=torch.float16
+    # )
 
     model = AutoModelForCausalLM.from_pretrained(
         LLAMA_PATH,
-        quantization_config=quantization_config,
+        # quantization_config=quantization_config,
         device_map="auto"
     )
 
@@ -57,8 +57,7 @@ def main():
         tokenizer=tokenizer,
         max_new_tokens=512,
         temperature=0.7,
-        do_sample=True,
-        device=0 if torch.cuda.is_available() else -1,
+        do_sample=True
     )
 
     # Then create the LangChain wrapper around the pipeline
