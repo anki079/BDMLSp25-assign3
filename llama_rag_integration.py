@@ -1,6 +1,7 @@
 # llama_rag_integration.py
 
 import time
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from langchain.chains import RetrievalQA
 from langchain.llms import HuggingFacePipeline
@@ -8,18 +9,18 @@ from langchain.llms import HuggingFacePipeline
 class LLaMARAGSystem:
     def __init__(self, vector_store, llama_path="./checkpoints-llama-single-gpu-mem-opt", max_new_tokens=512):
         self.vector_store = vector_store
-        self.llama_path    = llama_path
+        self.llama_path = llama_path
         self.max_new_tokens = max_new_tokens
 
     def setup_llama(self):
         """Load LLaMA tokenizer + 4-bit model, wrapped in a LangChain LLM pipeline."""
         tokenizer = AutoTokenizer.from_pretrained(self.llama_path)
-        model     = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             self.llama_path,
             load_in_4bit=True,
             device_map="auto"
         )
-        pipeline  = HuggingFacePipeline(
+        pipeline = HuggingFacePipeline(
             model=model,
             tokenizer=tokenizer,
             device=0,
@@ -46,12 +47,12 @@ class LLaMARAGSystem:
 
             # 2) Prompt construction
             context = "\n\n".join(d.page_content for d in docs)
-            prompt  = f"{context}\n\nQ: {q}\nA:"
+            prompt = f"{context}\n\nQ: {q}\nA:"
 
             # 3) Generation
-            t2      = time.time()
-            answer  = llm(prompt)
-            t3      = time.time()
+            t2 = time.time()
+            answer = llm(prompt)
+            t3 = time.time()
 
             results.append({
                 "question": q,
@@ -74,9 +75,67 @@ class LLaMARAGSystem:
 
         for q in test_queries:
             prompt = f"Q: {q}\nA:"
-            t0     = time.time()
+            t0 = time.time()
             answer = llm(prompt)
-            t1     = time.time()
+            t1 = time.time()
+
+            baseline.append({
+                "question": q,
+                "answer": answer,
+                "generation_time": t1 - t0
+            })
+
+        avg_gen = sum(r["generation_time"] for r in baseline) / len(baseline)
+        return baseline, avg_gen
+
+    # New methods to work with pre-loaded LLM
+    def evaluate_rag_with_llm(self, llm, test_queries, k=5):
+        """
+        Use a pre-loaded LLM for evaluation instead of loading a new one.
+        This reuses the retriever workflow but avoids loading a new model.
+        """
+        retriever = self.vector_store.as_retriever(search_kwargs={"k": k})
+        results = []
+
+        for q in test_queries:
+            # 1) Retrieval
+            t0 = time.time()
+            docs = retriever.get_relevant_documents(q)
+            t1 = time.time()
+
+            # 2) Prompt construction
+            context = "\n\n".join(d.page_content for d in docs)
+            prompt = f"{context}\n\nQ: {q}\nA:"
+
+            # 3) Generation
+            t2 = time.time()
+            answer = llm(prompt)
+            t3 = time.time()
+
+            results.append({
+                "question": q,
+                "answer": answer,
+                "num_source_docs": len(docs),
+                "retrieval_time": t1 - t0,
+                "generation_time": t3 - t2,
+                "total_time": t3 - t0
+            })
+
+        avg_total = sum(r["total_time"] for r in results) / len(results)
+        return results, avg_total
+
+    def evaluate_baseline_with_llm(self, llm, test_queries):
+        """
+        Use a pre-loaded LLM for baseline evaluation.
+        This avoids loading a new model for each experiment.
+        """
+        baseline = []
+
+        for q in test_queries:
+            prompt = f"Q: {q}\nA:"
+            t0 = time.time()
+            answer = llm(prompt)
+            t1 = time.time()
 
             baseline.append({
                 "question": q,

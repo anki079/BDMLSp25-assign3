@@ -180,43 +180,45 @@ class RAGExperiment:
         dimension = len(sample_emb)
 
         # 2) Build the appropriate FAISS index (flat, ivf, pq, hnsw, ivf_pq)
-        index = self.create_faiss_index(dimension)
+        faiss_index = self.create_faiss_index(dimension)  # Renamed to faiss_index to avoid conflict
 
         # 3) Embed every chunk into a single matrix
-        #    (chunks[i].page_content is assumed to be the text)
         all_embeddings = np.vstack([
             embeddings.embed_query(chunk.page_content)
             for chunk in chunks
         ]).astype('float32') 
 
         # 4) Train the index if it requires training (e.g. IVF, PQ)
-        if hasattr(index, "is_trained") and not index.is_trained:
-            index.train(all_embeddings)
+        if hasattr(faiss_index, "is_trained") and not faiss_index.is_trained:
+            faiss_index.train(all_embeddings)
 
         # 5) Add all vectors into the index
-        index.add(all_embeddings)
+        faiss_index.add(all_embeddings)
 
         texts     = [c.page_content for c in chunks]
         metadatas = [c.metadata     for c in chunks]
 
-        # 6) Inject your prebuilt index into LangChain’s FAISS store
+        # 6) Create FAISS vectorstore WITHOUT passing the index parameter
+        #    and then manually set the index afterward
         vectorstore = FAISS.from_texts(
             texts,
             embeddings,
-            metadatas=metadatas,
-            index=index,
+            metadatas=metadatas
         )
+        
+        # Replace the default index with our custom one
+        vectorstore.index = faiss_index
 
         # 7) (Optional) tweak index parameters per type
-        vs = vectorstore.index  # the underlying FAISS Index
         if "ivf" in self.vector_search_type.lower():
             # make sure IVF also uses a reasonable nprobe
-            if hasattr(vs, "nprobe"):
-                vs.nprobe = 10
+            if hasattr(vectorstore.index, "nprobe"):
+                vectorstore.index.nprobe = 10
         if "hnsw" in self.vector_search_type.lower():
             # how exhaustive the search is
-            vs.hnsw.efConstruction = 200
-            vs.hnsw.efSearch = 200
+            if hasattr(vectorstore.index, "hnsw"):
+                vectorstore.index.hnsw.efConstruction = 200
+                vectorstore.index.hnsw.efSearch = 200
 
         index_time = time.time() - start_time
         print(f"Created vector store in {index_time:.2f} seconds")
