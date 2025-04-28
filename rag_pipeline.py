@@ -172,7 +172,6 @@ class RAGExperiment:
     
     def create_vector_store(self, chunks, embeddings):
         """Create a LangChain FAISS vector store using a manually built FAISS index."""
-        import time, numpy as np
 
         start_time = time.time()
 
@@ -188,7 +187,7 @@ class RAGExperiment:
         all_embeddings = np.vstack([
             embeddings.embed_query(chunk.page_content)
             for chunk in chunks
-        ])
+        ]).astype('float32') 
 
         # 4) Train the index if it requires training (e.g. IVF, PQ)
         if hasattr(index, "is_trained") and not index.is_trained:
