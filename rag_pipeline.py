@@ -4,7 +4,7 @@ import time
 import json
 from datetime import datetime
 from langchain.document_loaders import DirectoryLoader, TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
 from langchain.vectorstores import FAISS
 import faiss
@@ -12,9 +12,19 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
 
-
+# custom wrapper for BGE embeddings to work with langchain
 class CustomBGEEmbeddings:
-    """Custom wrapper for BGE embeddings to work with LangChain."""
+    # from langchain.embeddings import HuggingFaceBgeEmbeddings
+    # model_name = "BAAI/bge-large-en-v1.5"
+    # model_kwargs = {'device': 'cuda'}
+    # encode_kwargs = {'normalize_embeddings': True} # set True to compute cosine similarity
+    # model = HuggingFaceBgeEmbeddings(
+    #     model_name=model_name,
+    #     model_kwargs=model_kwargs,
+    #     encode_kwargs=encode_kwargs,
+    #     query_instruction="为这个句子生成表示以用于检索相关文章："
+    # )
+    # model.query_instruction = "为这个句子生成表示以用于检索相关文章："
     
     def __init__(self, model_name="BAAI/bge-large-en"):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -48,8 +58,8 @@ class RAGExperiment:
                  text_dir="./processed_texts",
                  embedding_model="sentence-transformers/all-MiniLM-L6-v2",
                  vector_search_type="faiss_flat",
-                 chunk_size=1600,
-                 chunk_overlap=200,
+                 chunk_size=300,
+                 chunk_overlap=50,
                  results_dir="./experiment_results",
                  openai_api_key=None):
         
@@ -69,25 +79,17 @@ class RAGExperiment:
         
 
     def load_documents(self):
-        """Load text documents with metadata."""
         start_time = time.time()
-        
-        # Load text files
         text_loader = DirectoryLoader(self.text_dir, glob="*.txt", loader_cls=TextLoader)
         documents = text_loader.load()
-        
-        # Load corresponding metadata
         metadata_dir = os.path.join(self.text_dir, "metadata")
         for doc in documents:
-            # Extract filename from document source
             txt_filename = os.path.basename(doc.metadata['source'])
             json_filename = txt_filename.replace('.txt', '_metadata.json')
             metadata_path = os.path.join(metadata_dir, json_filename)
-            
             if os.path.exists(metadata_path):
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
-                    # Add metadata to document
                     doc.metadata.update(metadata)
         
         load_time = time.time() - start_time
@@ -95,18 +97,15 @@ class RAGExperiment:
         return documents, load_time
     
     def chunk_documents(self, documents):
-        """Split documents into chunks while preserving metadata."""
         start_time = time.time()
-        text_splitter = RecursiveCharacterTextSplitter(
+        text_splitter = TokenTextSplitter(
             chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            separators=["\n\n", "\n", ". ", " ", ""]
+            chunk_overlap=self.chunk_overlap
+            # separators=["\n\n", "\n", ". ", " ", ""]
         )
-        
         chunks = []
         for doc in documents:
             doc_chunks = text_splitter.split_documents([doc])
-            # Add source document metadata to each chunk
             for chunk in doc_chunks:
                 chunk.metadata.update({
                     "source_document": doc.metadata.get('filename', ''),
@@ -119,20 +118,19 @@ class RAGExperiment:
         return chunks, chunk_time
     
     def create_embeddings(self):
-        """Create embedding model based on configuration."""
         start_time = time.time()
         
-        if "openai" in self.embedding_model.lower():
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key required for OpenAI embeddings")
-            embeddings = OpenAIEmbeddings(
-                model="text-embedding-3-large",
-                openai_api_key=self.openai_api_key
-            )
-        elif "bge-large" in self.embedding_model.lower():
+        # if "openai" in self.embedding_model.lower():
+        #     if not self.openai_api_key:
+        #         raise ValueError("API key required for OpenAI embeddings")
+        #     embeddings = OpenAIEmbeddings(
+        #         model="text-embedding-3-large",
+        #         openai_api_key=self.openai_api_key
+        #     )
+        if "bge-large" in self.embedding_model.lower():
             embeddings = CustomBGEEmbeddings(model_name="BAAI/bge-large-en")
         else:
-            # Default to sentence-transformers
+            # default to sentence-transformers
             embeddings = HuggingFaceEmbeddings(
                 model_name=self.embedding_model,
                 model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'}
@@ -143,30 +141,24 @@ class RAGExperiment:
         return embeddings, embedding_time
     
     def create_faiss_index(self, dimension):
-        """Create Faiss index based on configuration."""
         if self.vector_search_type == "faiss_flat":
-            # Flat index (exact search)
             index = faiss.IndexFlatL2(dimension)
         
         elif self.vector_search_type == "faiss_ivf":
-            # IVF index (approximate search)
-            nlist = 100  # number of clusters
+            nlist = 100  # no of clusters
             quantizer = faiss.IndexFlatL2(dimension)
             index = faiss.IndexIVFFlat(quantizer, dimension, nlist)
         
         elif self.vector_search_type == "faiss_pq":
-            # Product Quantization
-            m = 8  # number of subquantizers
+            m = 8  # no of subquantizers
             nbits = 8  # bits per subquantizer
             index = faiss.IndexPQ(dimension, m, nbits)
         
         elif self.vector_search_type == "faiss_hnsw":
-            # HNSW
-            M = 32  # number of connections per element
+            M = 32  # no of connections per element
             index = faiss.IndexHNSWFlat(dimension, M)
         
         elif self.vector_search_type == "faiss_ivf_pq":
-            # IVF with PQ
             nlist = 100
             m = 8
             nbits = 8
@@ -306,8 +298,8 @@ if __name__ == "__main__":
     # Define the embedding models and vector search types
     embedding_models = [
         "sentence-transformers/all-MiniLM-L6-v2",
-        "BAAI/bge-large-en",
-        "openai/text-embedding-3-large"
+        "BAAI/bge-large-en"
+        # "openai/text-embedding-3-large"
     ]
     
     vector_search_types = [
