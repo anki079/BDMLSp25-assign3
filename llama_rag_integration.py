@@ -2,8 +2,8 @@
 
 import time
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFacePipeline
+from langchain_community.chains import RetrievalQA
+from langchain_community.llms import HuggingFacePipeline
 
 class LLaMARAGSystem:
     def __init__(self, vector_store, llama_path="./checkpoints-llama-single-gpu-mem-opt", max_new_tokens=512):

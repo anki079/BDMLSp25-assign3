@@ -3,10 +3,10 @@ import os
 import time
 import json
 from datetime import datetime
-from langchain.document_loaders import DirectoryLoader, TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
-from langchain.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
 import faiss
 import numpy as np
 import torch
@@ -14,7 +14,7 @@ from transformers import AutoTokenizer, AutoModel
 
 # custom wrapper for BGE embeddings to work with langchain
 class CustomBGEEmbeddings:
-    # from langchain.embeddings import HuggingFaceBgeEmbeddings
+    # from langchain_community.embeddings import HuggingFaceBgeEmbeddings
     # model_name = "BAAI/bge-large-en-v1.5"
     # model_kwargs = {'device': 'cuda'}
     # encode_kwargs = {'normalize_embeddings': True} # set True to compute cosine similarity
@@ -167,7 +167,7 @@ class RAGExperiment:
         
         else:
             raise ValueError(f"Unsupported vector search type: {self.vector_search_type}")
-        
+        print(f"Created faiss index of type {self.vector_search_type} with dimension {dimension}")
         return index
     
     def create_vector_store(self, chunks, embeddings):
@@ -196,19 +196,19 @@ class RAGExperiment:
         # 5) Add all vectors into the index
         index.add(all_embeddings)
 
+        texts     = [c.page_content for c in chunks]
+        metadatas = [c.metadata     for c in chunks]
+
         # 6) Inject your prebuilt index into LangChain’s FAISS store
-        vectorstore = FAISS.from_documents(
-            documents=chunks,
-            embedding=embeddings,
+        vectorstore = FAISS.from_texts(
+            texts,
+            embeddings,
+            metadatas=metadatas,
             index=index,
         )
 
         # 7) (Optional) tweak index parameters per type
         vs = vectorstore.index  # the underlying FAISS Index
-        if "flat" in self.vector_search_type.lower():
-            # how many clusters to search over (only relevant for IVF hybrids)
-            if hasattr(vs, "nprobe"):
-                vs.nprobe = 10
         if "ivf" in self.vector_search_type.lower():
             # make sure IVF also uses a reasonable nprobe
             if hasattr(vs, "nprobe"):
