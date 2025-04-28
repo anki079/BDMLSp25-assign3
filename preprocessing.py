@@ -1,59 +1,84 @@
-# convert pdfs to txt and preserve metadata
 import os
 import json
-from langchain.document_loaders import PyPDFLoader, DirectoryLoader
+import signal
+import fitz  # PyMuPDF
+import numpy as np
 from tqdm import tqdm
 
-def convert_pdfs_to_text(pdf_dir="./climate_text_dataset", output_dir="./processed_texts"):
-    
-    os.makedirs(output_dir, exist_ok=True)
-    metadata_dir = os.path.join(output_dir, "metadata")
-    os.makedirs(metadata_dir, exist_ok=True)
-    
-    pdf_loader = DirectoryLoader(pdf_dir, glob="**/*.pdf", loader_cls=PyPDFLoader)
-    pdf_documents = pdf_loader.load()
-    
-    print(f"Found {len(pdf_documents)} PDF documents")
-    
-    documents_by_source = {}
-    for doc in pdf_documents:
-        source = doc.metadata.get('source', '')
-        if source not in documents_by_source:
-            documents_by_source[source] = []
-        documents_by_source[source].append(doc)
-    
-    for source_path, docs in tqdm(documents_by_source.items(), desc="Converting PDFs"):
-        filename = os.path.basename(source_path).replace('.pdf', '')
-        
-        full_text = ""
-        page_metadata = []
-        
-        for i, doc in enumerate(docs):
-            full_text += f"=== Page {i+1} ===\n{doc.page_content}\n\n"
-            page_metadata.append({
-                "page_number": i + 1,
-                "content_length": len(doc.page_content),
-                "metadata": doc.metadata
-            })
-        
-        text_output_path = os.path.join(output_dir, f"{filename}.txt")
-        with open(text_output_path, 'w', encoding='utf-8') as f:
-            f.write(full_text)
-        
-        metadata_output_path = os.path.join(metadata_dir, f"{filename}_metadata.json")
-        metadata = {
-            "source_file": source_path,
-            "filename": filename,
-            "total_pages": len(docs),
-            "total_length": len(full_text),
-            "pages": page_metadata
-        }
-        
-        with open(metadata_output_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2)
-    
-    print(f"Converted {len(documents_by_source)} PDFs to text files in {output_dir}")
-    print(f"Metadata saved in {metadata_dir}")
+# --- Timeout handler to avoid hangs on malformed PDFs ---
+class TimeoutException(Exception):
+    pass
 
-if __name__ == "__main__":
-    convert_pdfs_to_text()
+def handler(signum, frame):
+    raise TimeoutException()
+
+# Register the handler for SIGALRM
+signal.signal(signal.SIGALRM, handler)
+
+# --- Paths ---
+INPUT_DIR = "./climate_text_dataset"
+OUTPUT_DIR = "./processed_texts"
+METADATA_DIR = os.path.join(OUTPUT_DIR, "metadata")
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(METADATA_DIR, exist_ok=True)
+
+# --- Gather all PDF paths ---
+pdf_paths = []
+for root, _, files in os.walk(INPUT_DIR):
+    for fname in files:
+        if fname.lower().endswith(".pdf"):
+            pdf_paths.append(os.path.join(root, fname))
+
+print(f"Found {len(pdf_paths)} PDFs under {INPUT_DIR}")
+
+# --- Conversion loop ---
+for pdf_path in tqdm(pdf_paths, desc="Converting PDFs"):
+    filename = os.path.splitext(os.path.basename(pdf_path))[0]
+    try:
+        # start a 60 s alarm for this file
+        signal.alarm(60)
+
+        doc = fitz.open(pdf_path)
+        pages_meta = []
+        full_text_parts = []
+
+        for i, page in enumerate(doc):
+            content = page.get_text() or ""
+            full_text_parts.append(f"=== Page {i+1} ===\n{content}\n")
+            pages_meta.append({
+                "page_number": i + 1,
+                "content_length": len(content)
+            })
+
+        doc.close()
+        # cancel the alarm
+        signal.alarm(0)
+
+    except TimeoutException:
+        print(f"  ⚠️ Timeout extracting {filename}. Skipping.")
+        continue
+    except Exception as e:
+        print(f"  ⚠️ Error on {filename}: {e}. Skipping.")
+        continue
+
+    # --- Write out the .txt ---
+    full_text = "\n\n".join(full_text_parts)
+    txt_path = os.path.join(OUTPUT_DIR, f"{filename}.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(full_text)
+
+    # --- Write out the metadata JSON ---
+    metadata = {
+        "source_file": pdf_path,
+        "filename": filename,
+        "total_pages": len(pages_meta),
+        "total_length": len(full_text),
+        "pages": pages_meta
+    }
+    meta_path = os.path.join(METADATA_DIR, f"{filename}_metadata.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+print(f"\nConverted {len(os.listdir(OUTPUT_DIR))} text files → {OUTPUT_DIR}")
+print(f"Metadata JSONs in → {METADATA_DIR}")

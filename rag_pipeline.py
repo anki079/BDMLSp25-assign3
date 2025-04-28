@@ -179,34 +179,59 @@ class RAGExperiment:
         return index
     
     def create_vector_store(self, chunks, embeddings):
-        """Create vector store with custom Faiss index."""
+        """Create a LangChain FAISS vector store using a manually built FAISS index."""
+        import time, numpy as np
+
         start_time = time.time()
-        
-        # Get dimension of embeddings
-        sample_embedding = embeddings.embed_query("test")
-        dimension = len(sample_embedding)
-        
-        # Create the appropriate Faiss index
+
+        # 1) Determine embedding dimensionality
+        sample_emb = embeddings.embed_query("test")
+        dimension = len(sample_emb)
+
+        # 2) Build the appropriate FAISS index (flat, ivf, pq, hnsw, ivf_pq)
         index = self.create_faiss_index(dimension)
-        
-        # Create the vector store
-        vectorstore = FAISS.from_documents(chunks, embeddings)
-        
-        # For IVF indexes, we need to train them
+
+        # 3) Embed every chunk into a single matrix
+        #    (chunks[i].page_content is assumed to be the text)
+        all_embeddings = np.vstack([
+            embeddings.embed_query(chunk.page_content)
+            for chunk in chunks
+        ])
+
+        # 4) Train the index if it requires training (e.g. IVF, PQ)
+        if hasattr(index, "is_trained") and not index.is_trained:
+            index.train(all_embeddings)
+
+        # 5) Add all vectors into the index
+        index.add(all_embeddings)
+
+        # 6) Inject your prebuilt index into LangChain’s FAISS store
+        vectorstore = FAISS.from_documents(
+            documents=chunks,
+            embedding=embeddings,
+            index=index,
+        )
+
+        # 7) (Optional) tweak index parameters per type
+        vs = vectorstore.index  # the underlying FAISS Index
+        if "flat" in self.vector_search_type.lower():
+            # how many clusters to search over (only relevant for IVF hybrids)
+            if hasattr(vs, "nprobe"):
+                vs.nprobe = 10
         if "ivf" in self.vector_search_type.lower():
-            # Extract embeddings from the vectorstore
-            embeddings_array = np.array([vectorstore.index.reconstruct(i) for i in range(vectorstore.index.ntotal)])
-            # Train the index
-            if not index.is_trained:
-                index.train(embeddings_array)
-            # Add vectors to the trained index
-            index.add(embeddings_array)
-            # Replace the index in the vectorstore
-            vectorstore.index = index
-        
+            # make sure IVF also uses a reasonable nprobe
+            if hasattr(vs, "nprobe"):
+                vs.nprobe = 10
+        if "hnsw" in self.vector_search_type.lower():
+            # how exhaustive the search is
+            vs.hnsw.efConstruction = 200
+            vs.hnsw.efSearch = 200
+
         index_time = time.time() - start_time
         print(f"Created vector store in {index_time:.2f} seconds")
+
         return vectorstore, index_time
+
     
     def run_experiment(self, test_queries=None):
         """Run complete experiment and save results."""
