@@ -8,3 +8,8 @@ bitsandbytes
 accelerate
 peft
 openai
+langchain-huggingface
+langchain-community
+sentence-transformers
+numpy
+matplotlib
