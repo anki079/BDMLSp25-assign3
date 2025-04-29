@@ -220,11 +220,10 @@
 # llama_rag_integration.py
 
 import time
-import torch
 import logging
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFacePipeline
+from langchain_huggingface import HuggingFacePipeline
+
 
 class LLaMARAGSystem:
     def __init__(self, vector_store, llama_path="./checkpoints-llama-single-gpu-mem-opt", max_new_tokens=512):
@@ -267,72 +266,59 @@ class LLaMARAGSystem:
     # methods to work with pre-loaded LLM
     def evaluate_rag_with_llm(self, llm, test_queries, k=5):
         """
-        Use a pre-loaded LLM for evaluation instead of loading a new one.
-        This reuses the retriever workflow but avoids loading a new model.
-        Uses batched processing where possible for better GPU utilization.
+        Use a pre-loaded LLM for evaluation, measuring exact retrieval,
+        generation, and total time per query.
         """
         logging.info(f"Evaluating RAG system with k={k} for {len(test_queries)} queries")
         retriever = self.vector_store.as_retriever(search_kwargs={"k": k})
         results = []
-        
-        # For RAG, we first need to do individual retrieval for each query
-        processed_queries = []
-        all_docs = []
-        all_prompts = []
-        retrieval_times = []
-        
-        # Step 1: Retrieve relevant documents for each query
+
         for i, q in enumerate(test_queries):
-            logging.info(f"Retrieving documents for query {i+1}/{len(test_queries)}: {q[:50]}...")
-            
+            logging.info(f"Processing query {i+1}/{len(test_queries)}: {q[:50]}...")
+
+            # 1) Retrieval
             t0 = time.time()
             docs = retriever.get_relevant_documents(q)
             t1 = time.time()
             retrieval_time = t1 - t0
-            
-            logging.info(f"Retrieved {len(docs)} documents in {retrieval_time:.2f} seconds")
-            
-            # Create prompt with retrieved context
+            logging.info(f"  Retrieved {len(docs)} docs in {retrieval_time:.2f}s")
+
+            # 2) Prompt construction
             context = "\n\n".join(d.page_content for d in docs)
             prompt = f"{context}\n\nQ: {q}\nA:"
-            
-            processed_queries.append(q)
-            all_docs.append(docs)
-            all_prompts.append(prompt)
-            retrieval_times.append(retrieval_time)
-        
-        # Step 2: Generate answers in batch
-        logging.info(f"Generating answers for all queries in batch...")
-        gen_start_time = time.time()
-        batch_answers = llm.batch(all_prompts)
-        gen_end_time = time.time()
-        total_gen_time = gen_end_time - gen_start_time
-        avg_gen_time = total_gen_time / len(test_queries)
-        logging.info(f"Generated all answers in {total_gen_time:.2f}s (avg {avg_gen_time:.2f}s per query)")
-        
-        # Step 3: Process results
-        for i, (query, docs, answer, r_time) in enumerate(zip(processed_queries, all_docs, batch_answers, retrieval_times)):
-            total_time = r_time + avg_gen_time  # Approximated
-            
+            prompt_tokens = len(prompt.split())
+            logging.info(f"  Prompt has ~{prompt_tokens} tokens")
+
+            # 3) Generation (measured per-query)
+            t2 = time.time()
+            answer = llm(prompt)
+            t3 = time.time()
+            generation_time = t3 - t2
+            logging.info(f"  Generated answer in {generation_time:.2f}s")
+
+            # 4) Collect results
+            total_time = t3 - t0
             results.append({
-                "question": query,
+                "question": q,
                 "answer": answer,
                 "num_source_docs": len(docs),
-                "retrieval_time": r_time,
-                "generation_time": avg_gen_time,  # Approximated
+                "retrieval_time": retrieval_time,
+                "generation_time": generation_time,
                 "total_time": total_time
             })
-        
-        # Calculate averages
-        avg_total = sum(r["total_time"] for r in results) / len(results)
-        avg_retrieval = sum(r["retrieval_time"] for r in results) / len(results)
-        
-        logging.info(f"RAG Evaluation complete:")
-        logging.info(f"  - Average total time: {avg_total:.2f}s")
-        logging.info(f"  - Average retrieval time: {avg_retrieval:.2f}s")
-        logging.info(f"  - Average generation time: {avg_gen_time:.2f}s")
-        
+
+        # Compute averages
+        avg_total = sum(r["total_time"]      for r in results) / len(results)
+        avg_retrieval = sum(r["retrieval_time"]  for r in results) / len(results)
+        avg_generation = sum(r["generation_time"] for r in results) / len(results)
+
+        logging.info("RAG Evaluation complete:")
+        logging.info(f"  - Avg retrieval time:  {avg_retrieval:.2f}s")
+        logging.info(f"  - Avg generation time: {avg_generation:.2f}s")
+        logging.info(f"  - Avg total time:      {avg_total:.2f}s")
+
         return results, avg_total
+
 
     def evaluate_baseline_with_llm(self, llm, test_queries):
         """

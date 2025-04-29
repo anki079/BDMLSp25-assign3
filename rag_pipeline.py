@@ -391,13 +391,13 @@ import json
 import logging
 from datetime import datetime
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
+from langchain.text_splitter import TokenTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings, HuggingFaceBgeEmbeddings
 from langchain_community.vectorstores import FAISS
 import faiss
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModel
+
 
 class RAGExperiment:
     def __init__(self, 
@@ -587,86 +587,70 @@ class RAGExperiment:
             raise
     
     def create_vector_store(self, chunks, embeddings):
-        """Create a LangChain FAISS vector store using a manually built FAISS index."""
+        """
+        Create a LangChain FAISS vector store using a manually built FAISS index,
+        with correct parameter tuning on the raw index object.
+        """
+        import time, logging, faiss
+        from langchain_community.vectorstores import FAISS
+
         start_time = time.time()
         logging.info(f"Creating vector store for {len(chunks)} chunks")
 
-        try:
-            # 1) Determine embedding dimensionality
-            sample_emb = embeddings.embed_query("test")
-            dimension = len(sample_emb)
-            logging.info(f"Embedding dimension: {dimension}")
+        # 1) Determine embedding dimensionality
+        sample_emb = embeddings.embed_query("test")
+        dimension = len(sample_emb)
+        logging.info(f"Embedding dimension: {dimension}")
 
-            # 2) Build the appropriate FAISS index
-            faiss_index = self.create_faiss_index(dimension)
+        # 2) Build the raw FAISS index
+        faiss_index = self.create_faiss_index(dimension)
 
-            # 3) Embed every chunk into a single matrix
-            logging.info("Generating embeddings for all chunks...")
-            batch_size = 100
-            all_embeddings = []
-            
-            for i in range(0, len(chunks), batch_size):
-                batch = chunks[i:i+batch_size]
-                batch_texts = [chunk.page_content for chunk in batch]
-                
-                if hasattr(embeddings, 'embed_documents'):
-                    batch_embeddings = embeddings.embed_documents(batch_texts)
-                else:
-                    batch_embeddings = [embeddings.embed_query(text) for text in batch_texts]
-                
-                all_embeddings.extend(batch_embeddings)
-                
-                if (i+batch_size) % 500 == 0 or (i+batch_size) >= len(chunks):
-                    logging.info(f"Embedded {min(i+batch_size, len(chunks))}/{len(chunks)} chunks")
-            
-            all_embeddings = np.vstack(all_embeddings).astype('float32')
-            logging.info(f"Generated {len(all_embeddings)} embeddings with shape {all_embeddings.shape}")
+        # ——— FIX: Tune raw faiss_index before adding vectors ———
+        if isinstance(faiss_index, faiss.IndexIVFFlat):
+            logging.info("Tuning IVF: setting nprobe=10")
+            faiss_index.nprobe = 10
+        elif isinstance(faiss_index, faiss.IndexHNSWFlat):
+            logging.info("Tuning HNSW: setting efConstruction=200, efSearch=200")
+            faiss_index.hnsw.efConstruction = 200
+            faiss_index.hnsw.efSearch       = 200
+        # ————————————————————————————————————————————————
 
-            # 4) Train the index if it requires training (e.g. IVF, PQ)
-            if hasattr(faiss_index, "is_trained") and not faiss_index.is_trained:
-                logging.info("Training FAISS index...")
-                faiss_index.train(all_embeddings)
-                logging.info("FAISS index training complete")
+        # 3) Generate embeddings for all chunks in batches
+        all_embeddings = []
+        batch_size = 100
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            texts = [c.page_content for c in batch]
+            if hasattr(embeddings, "embed_documents"):
+                batch_emb = embeddings.embed_documents(texts)
+            else:
+                batch_emb = [embeddings.embed_query(t) for t in texts]
+            all_embeddings.extend(batch_emb)
+            logging.debug(f"  Embedded {min(i+batch_size, len(chunks))}/{len(chunks)} chunks")
 
-            # 5) Add all vectors into the index
-            logging.info(f"Adding {len(all_embeddings)} vectors to FAISS index...")
-            faiss_index.add(all_embeddings)
+        all_embeddings = np.vstack(all_embeddings).astype("float32")
 
-            texts = [c.page_content for c in chunks]
-            metadatas = [c.metadata for c in chunks]
-            logging.info("Preparing for FAISS vectorstore creation")
+        # 4) Train (if needed) and add to FAISS index
+        if hasattr(faiss_index, "is_trained") and not faiss_index.is_trained:
+            logging.info("Training FAISS index")
+            faiss_index.train(all_embeddings)
+        logging.info(f"Adding {all_embeddings.shape[0]} vectors to FAISS index")
+        faiss_index.add(all_embeddings)
 
-            # 6) Create FAISS vectorstore and then manually set the index
-            vectorstore = FAISS.from_texts(
-                texts,
-                embeddings,
-                metadatas=metadatas
-            )
-            
-            # Replace the default index with our custom one
-            vectorstore.index = faiss_index
-            logging.info("FAISS vectorstore created and custom index assigned")
+        # 5) Swap into LangChain store
+        texts     = [c.page_content for c in chunks]
+        metadatas = [c.metadata     for c in chunks]
+        vectorstore = FAISS.from_texts(
+            texts,
+            embeddings,
+            metadatas=metadatas
+        )
+        vectorstore.index = faiss_index
 
-            # 7) (Optional) tweak index parameters per type
-            if "ivf" in self.vector_search_type.lower():
-                if hasattr(vectorstore.index, "nprobe"):
-                    vectorstore.index.nprobe = 10
-                    logging.info(f"Set IVF nprobe parameter to 10")
-                    
-            if "hnsw" in self.vector_search_type.lower():
-                if hasattr(vectorstore.index, "hnsw"):
-                    vectorstore.index.hnsw.efConstruction = 200
-                    vectorstore.index.hnsw.efSearch = 200
-                    logging.info(f"Set HNSW ef parameters to 200")
+        index_time = time.time() - start_time
+        logging.info(f"Vector store created in {index_time:.2f}s")
+        return vectorstore, index_time
 
-            index_time = time.time() - start_time
-            logging.info(f"Vector store creation completed in {index_time:.2f} seconds")
-
-            return vectorstore, index_time
-            
-        except Exception as e:
-            logging.error(f"Error creating vector store: {str(e)}", exc_info=True)
-            raise
 
     def create_dummy_vectorstore(self, embedding_model):
         """Create a simple FAISS vectorstore just for baseline testing."""
@@ -682,71 +666,47 @@ class RAGExperiment:
             logging.error(f"Error creating dummy vectorstore: {str(e)}", exc_info=True)
             raise
 
-    def create_vector_store_from_embeddings(self, embedding_model, texts, metadatas, precomputed_embeddings):
-        """Create a vector store using precomputed embeddings."""
-        logging.info(f"Creating vector store from {len(precomputed_embeddings)} precomputed embeddings")
-        start_time = time.time()
-        
-        try:
-            # 1) Determine embedding dimensionality
-            dimension = precomputed_embeddings.shape[1]
-            logging.info(f"Embedding dimension: {dimension}")
-            
-            # 2) Build the appropriate FAISS index
-            faiss_index = self.create_faiss_index(dimension)
-            
-            # 3) Train the index if it requires training (e.g. IVF, PQ)
-            if hasattr(faiss_index, "is_trained") and not faiss_index.is_trained:
-                logging.info(f"Training FAISS index of type {self.vector_search_type}...")
-                faiss_index.train(precomputed_embeddings)
-                logging.info("FAISS index training complete")
-            
-            # 4) Add all vectors into the index
-            logging.info(f"Adding {len(precomputed_embeddings)} vectors to the FAISS index...")
-            faiss_index.add(precomputed_embeddings)
-            
-            # Log important index properties for debugging
-            index_props = []
-            if hasattr(faiss_index, "is_trained"):
-                index_props.append(f"is_trained={faiss_index.is_trained}")
-            if hasattr(faiss_index, "ntotal"):
-                index_props.append(f"ntotal={faiss_index.ntotal}")
-            if hasattr(faiss_index, "d"):
-                index_props.append(f"dimension={faiss_index.d}")
-            
-            logging.info(f"FAISS index properties: {', '.join(index_props)}")
-            
-            # 5) Create FAISS vectorstore WITHOUT passing the custom index parameter
-            logging.info("Creating base FAISS vectorstore...")
-            vectorstore = FAISS.from_texts(
-                texts,
-                embedding_model,
-                metadatas=metadatas
-            )
-            
-            # 6) Replace the default index with our custom one
-            vectorstore.index = faiss_index
-            logging.info("Custom FAISS index assigned to vectorstore")
-            
-            # 7) Tweak index parameters per type
-            if "ivf" in self.vector_search_type.lower():
-                if hasattr(vectorstore.index, "nprobe"):
-                    vectorstore.index.nprobe = 10
-                    logging.info("Set IVF nprobe to 10")
-                    
-            if "hnsw" in self.vector_search_type.lower():
-                if hasattr(vectorstore.index, "hnsw"):
-                    vectorstore.index.hnsw.efConstruction = 200
-                    vectorstore.index.hnsw.efSearch = 200
-                    logging.info("Set HNSW ef parameters to 200")
-            
-            elapsed = time.time() - start_time
-            logging.info(f"Vector store created from precomputed embeddings in {elapsed:.2f} seconds")
-            return vectorstore
-            
-        except Exception as e:
-            logging.error(f"Error creating vector store from precomputed embeddings: {str(e)}", exc_info=True)
-            raise
+    
+
+    def create_vector_store_from_embeddings(
+        self, embedding_model, texts, metadatas, precomputed_embeddings
+        ):
+        """
+        Create a vector store using precomputed embeddings, with correct
+        FAISS parameter tuning on the raw index object.
+        """
+        # 1) Determine embedding dimensionality
+        dimension = precomputed_embeddings.shape[1]
+
+        # 2) Build the FAISS index
+        faiss_index = self.create_faiss_index(dimension)
+
+        # ——— FIXED: tune params directly on faiss_index ———
+        if isinstance(faiss_index, faiss.IndexIVFFlat):
+            logging.info("Setting IVF nprobe=10 on raw faiss_index")
+            faiss_index.nprobe = 10
+        elif isinstance(faiss_index, faiss.IndexHNSWFlat):
+            logging.info("Setting HNSW efConstruction=200, efSearch=200 on raw faiss_index")
+            faiss_index.hnsw.efConstruction = 200
+            faiss_index.hnsw.efSearch       = 200
+        # ——————————————————————————————————————————
+
+        # 3) Train (if needed) and add vectors
+        if hasattr(faiss_index, "is_trained") and not faiss_index.is_trained:
+            faiss_index.train(precomputed_embeddings)
+        faiss_index.add(precomputed_embeddings)
+        logging.info(f"Added {precomputed_embeddings.shape[0]} vectors to FAISS index")
+
+        # 4) Build the LangChain FAISS store and swap in our tuned index
+        vectorstore = FAISS.from_texts(
+            texts,
+            embedding_model,
+            metadatas=metadatas
+        )
+        vectorstore.index = faiss_index
+
+        return vectorstore
+
 
 
 # Example usage

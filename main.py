@@ -569,6 +569,8 @@ from rag_pipeline import RAGExperiment
 from llama_rag_integration import LLaMARAGSystem
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from langchain_huggingface import HuggingFacePipeline
+import matplotlib.pyplot as plt
+from collections import defaultdict
 
 # Set up logging
 def setup_logging(log_dir="./logs"):
@@ -617,10 +619,17 @@ def main():
     logging.info(f"LLAMA_PATH={LLAMA_PATH}, RESULTS_FILE={RESULTS_FILE}")
 
     TEST_QUERIES = [
-        "What are the main causes of climate change?",
-        "How does global warming affect ocean levels?",
-        "What are renewable energy solutions?"
-    ]
+    "What are the primary greenhouse gases contributing to climate change?",
+    "How do rising sea levels impact coastal communities?",
+    "What are the most promising renewable energy technologies for reducing carbon emissions?",
+    "How does deforestation contribute to global warming?",
+    "What are the economic impacts of transitioning to renewable energy sources?",
+    "How do different countries compare in their climate change policies?",
+    "What role does methane play in accelerating climate change?",
+    "How can individuals reduce their carbon footprint?",
+    "What are the challenges of implementing large-scale solar energy projects?",
+    "How is climate change affecting agriculture and food security worldwide?"
+]
 
     EMBEDDING_MODELS    = [
         "sentence-transformers/all-MiniLM-L6-v2",
@@ -666,10 +675,10 @@ def main():
             tokenizer=tokenizer,
             max_new_tokens=512,
             temperature=0.7,
-            do_sample=True,
-            batch_size=len(TEST_QUERIES)  # Set batch size to support batched processing
+            do_sample=True
+            # batch_size=len(TEST_QUERIES)  # Set batch size to support batched processing
         )
-        logging.info(f"Hugging Face pipeline created with batch_size={len(TEST_QUERIES)}")
+        logging.info(f"Hugging Face pipeline created") # with batch_size={len(TEST_QUERIES)}")
 
         # Create a custom wrapper for the pipeline that supports batched processing
         class BatchCapableLLM:
@@ -890,6 +899,121 @@ def main():
         except Exception as e:
             logging.error(f"Error with embedding model {em}: {str(e)}", exc_info=True)
             continue
+
+    def analyze_inference_times(all_results):
+        """
+        Analyze inference times across different configurations and produce statistics.
+        """
+        logging.info("Analyzing inference times across experiments...")
+        
+        # Create dictionaries to store retrieval and generation times by configuration
+        retrieval_times = defaultdict(list)
+        generation_times = defaultdict(list) 
+        total_times = defaultdict(list)
+        
+        # Extract times from results
+        for config, result in all_results.items():
+            if "error" in result:
+                continue
+                
+            try:
+                # Extract per-query results for RAG
+                if "rag" in result and "per_query" in result["rag"]:
+                    for query_result in result["rag"]["per_query"]:
+                        retrieval_times[config].append(query_result["retrieval_time"])
+                        generation_times[config].append(query_result["generation_time"])
+                        total_times[config].append(query_result["total_time"])
+            except Exception as e:
+                logging.error(f"Error processing results for {config}: {str(e)}")
+        
+        # Calculate statistics
+        stats = {}
+        for config in total_times.keys():
+            stats[config] = {
+                "retrieval": {
+                    "mean": np.mean(retrieval_times[config]),
+                    "std": np.std(retrieval_times[config]),
+                    "min": np.min(retrieval_times[config]),
+                    "max": np.max(retrieval_times[config])
+                },
+                "generation": {
+                    "mean": np.mean(generation_times[config]),
+                    "std": np.std(generation_times[config]),
+                    "min": np.min(generation_times[config]),
+                    "max": np.max(generation_times[config])
+                },
+                "total": {
+                    "mean": np.mean(total_times[config]),
+                    "std": np.std(total_times[config]),
+                    "min": np.min(total_times[config]),
+                    "max": np.max(total_times[config]),
+                    "n_samples": len(total_times[config])
+                }
+            }
+        
+        # Print statistics
+        for config, stat in stats.items():
+            logging.info(f"\nStatistics for {config}:")
+            logging.info(f"  Total inference time: mean={stat['total']['mean']:.2f}s, std={stat['total']['std']:.2f}s")
+            logging.info(f"  Retrieval time: mean={stat['retrieval']['mean']:.2f}s, std={stat['retrieval']['std']:.2f}s")
+            logging.info(f"  Generation time: mean={stat['generation']['mean']:.2f}s, std={stat['generation']['std']:.2f}s")
+            logging.info(f"  Samples: {stat['total']['n_samples']}")
+        
+        # Save statistics to file
+        with open("inference_time_stats.json", "w") as fp:
+            json.dump(stats, fp, indent=2)
+        logging.info("Inference time statistics saved to inference_time_stats.json")
+        
+        return stats
+    
+    stats = analyze_inference_times(all_results)
+
+    def create_visualizations(stats):
+        """Create visualizations of inference time statistics"""
+        logging.info("Creating inference time visualizations...")
+        
+        # Prepare data for plotting
+        configs = list(stats.keys())
+        means = [stats[c]["total"]["mean"] for c in configs]
+        stds = [stats[c]["total"]["std"] for c in configs]
+        retrieval_means = [stats[c]["retrieval"]["mean"] for c in configs]
+        generation_means = [stats[c]["generation"]["mean"] for c in configs]
+        
+        # Sort configs by total mean time
+        sorted_indices = np.argsort(means)
+        configs = [configs[i] for i in sorted_indices]
+        means = [means[i] for i in sorted_indices]
+        stds = [stds[i] for i in sorted_indices]
+        retrieval_means = [retrieval_means[i] for i in sorted_indices]
+        generation_means = [generation_means[i] for i in sorted_indices]
+        
+        # Create figure
+        plt.figure(figsize=(12, 8))
+        
+        # Plot bar chart
+        x = np.arange(len(configs))
+        width = 0.35
+        
+        plt.bar(x, retrieval_means, width, label='Retrieval Time')
+        plt.bar(x, generation_means, width, bottom=retrieval_means, label='Generation Time')
+        
+        # Add error bars for total time
+        plt.errorbar(x, means, yerr=stds, fmt='none', ecolor='black', capsize=5)
+        
+        # Customize plot
+        plt.xlabel('Configuration')
+        plt.ylabel('Time (seconds)')
+        plt.title('RAG Inference Time by Configuration')
+        plt.xticks(x, configs, rotation=45, ha='right')
+        plt.legend()
+        plt.tight_layout()
+        
+        # Save plot
+        plt.savefig('inference_times.png', dpi=300)
+        logging.info("Visualization saved to inference_times.png")
+
+    # Call the visualization function
+    create_visualizations(stats)
 
     # ─── 4) Write final results and clean up ─────────────────
     with open(RESULTS_FILE, "w") as fp:
